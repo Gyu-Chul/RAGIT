@@ -566,5 +566,5 @@ All other ports should be restricted to internal network only.
 
 ## 📄 License
 
-This project is licensed under the Apache 2.0 License.
+This project is licensed under the CC-BY-NC-4.0 License.
 
