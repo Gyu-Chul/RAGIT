@@ -3,7 +3,9 @@ RAG Worker 태스크 정의
 """
 
 import time
+from datetime import datetime
 from typing import Dict, Any, Union, Optional, List
+from sqlalchemy.orm import Session
 from .celery_app import app
 from .git_service import GitService
 from .git_service.types import CloneResult, StatusResult, PullResult, DeleteResult
@@ -15,6 +17,7 @@ from .vector_db.config import DEFAULT_MODEL_KEY
 from .ask_question import AskQuestion, PromptGenerator
 from .git_service.history_tracker import FunctionHistoryTracker
 from .git_service.types import CommitChange
+from .models.repository import Repository
 
 # 서비스 인스턴스 생성
 git_service = GitService()
@@ -23,6 +26,40 @@ parser_service = RepositoryParserService()
 vector_db_service = VectorDBService(embedding_batch_size=4)
 prompt_service = PromptGenerator()
 call_service = AskQuestion()
+
+# Database helper functions
+def update_repository_status(
+    db: Session,
+    repo_id: str,
+    status: str,
+    vectordb_status: Optional[str] = None
+) -> Optional[Repository]:
+    """Repository 상태 업데이트"""
+    db_repo = db.query(Repository).filter(Repository.id == repo_id).first()
+    if not db_repo:
+        return None
+
+    db_repo.status = status
+    if vectordb_status:
+        db_repo.vectordb_status = vectordb_status
+
+    db_repo.last_sync = datetime.now()
+    db.commit()
+    db.refresh(db_repo)
+
+    return db_repo
+
+def update_file_count(db: Session, repo_id: str, file_count: int) -> Optional[Repository]:
+    """파일 개수 업데이트"""
+    db_repo = db.query(Repository).filter(Repository.id == repo_id).first()
+    if not db_repo:
+        return None
+
+    db_repo.file_count = file_count
+    db.commit()
+    db.refresh(db_repo)
+
+    return db_repo
 
 @app.task
 def process_document(document_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -743,8 +780,6 @@ def update_repository_pipeline(
     else:
         DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/ragit')
 
-    from backend.services.repository_service import RepositoryService
-
     engine = create_engine(DATABASE_URL)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = SessionLocal()
@@ -752,13 +787,13 @@ def update_repository_pipeline(
 
     try:
         # 1. 상태를 'updating'으로 업데이트
-        RepositoryService.update_repository_status(db, repo_id, "updating", "pending")
+        update_repository_status(db, repo_id, "updating", "pending")
 
         # 2. PULL 하기 전, 먼저 변경될 파일 목록(diff) 확보
         logger.info(f"[{repo_name}] Step 1: Finding diff...")
         diff_result = git_service.diff_files(repo_name)
         if not diff_result.get('success'):
-            RepositoryService.update_repository_status(db, repo_id, "active", "error")
+            update_repository_status(db, repo_id, "active", "error")
             return {"success": False, "error": f"Failed to get diff: {diff_result.get('error')}", "step": "diff"}
 
         files_to_update = diff_result.get("files", [])
@@ -768,11 +803,22 @@ def update_repository_pipeline(
         logger.info(f"[{repo_name}] Step 2: Pulling latest changes.")
         pull_result = git_service.pull_repository(repo_name)
         if not pull_result.get('success'):
-            RepositoryService.update_repository_status(db, repo_id, "error", "error")
+            update_repository_status(db, repo_id, "error", "error")
             return {"success": False, "error": f"Git pull failed: {pull_result.get('error')}", "step": "pull"}
 
+        # 3.5. 변경사항이 없으면 바로 종료
+        if not files_to_update or len(files_to_update) == 0:
+            logger.info(f"[{repo_name}] No changes detected. Repository is already up to date.")
+            update_repository_status(db, repo_id, "active", "active")
+            return {
+                "success": True,
+                "message": "Repository is already up to date",
+                "no_changes": True,
+                "step": "complete"
+            }
+
         # 4. Vector DB 상태를 'updating'으로 변경
-        RepositoryService.update_repository_status(db, repo_id, "updating", "updating")
+        update_repository_status(db, repo_id, "updating", "updating")
 
         # 5. 확보한 목록으로 Vector DB의 기존 엔티티 삭제
         deleted_count = 0
@@ -784,7 +830,7 @@ def update_repository_pipeline(
                 source_files=files_to_update
             )
             if not delete_result.get('success'):
-                RepositoryService.update_repository_status(db, repo_id, "active", "error")
+                update_repository_status(db, repo_id, "active", "error")
                 return {"success": False, "error": f"Failed to delete entities: {delete_result.get('error')}", "step": "delete_entities"}
             deleted_count = num_files_to_delete
             logger.info(f"[{repo_name}] Deleted {deleted_count} old entities.")
@@ -795,11 +841,11 @@ def update_repository_pipeline(
         logger.info(f"[{repo_name}] Step 4: Re-parsing entire repository to update JSON files.")
         parse_result = parser_service.parse_repository(repo_name, save_json)
         if not parse_result.get('success'):
-            RepositoryService.update_repository_status(db, repo_id, "error", "error")
+            update_repository_status(db, repo_id, "error", "error")
             return {"success": False, "error": f"Parsing failed: {parse_result.get('message')}", "step": "parse"}
 
         file_count = parse_result.get('total_files', 0)
-        RepositoryService.update_file_count(db, repo_id, file_count)
+        update_file_count(db, repo_id, file_count)
 
         # 7. 변경된 파일 목록(files_to_update)에 해당하는 JSON 파일만 다시 임베딩
         logger.info(f"[{repo_name}] Step 5: Re-embedding only changed files...")
@@ -821,7 +867,7 @@ def update_repository_pipeline(
                     model_key=model_key
                 )
                 if not embed_result.get('success'):
-                    RepositoryService.update_repository_status(db, repo_id, "active", "error")
+                    update_repository_status(db, repo_id, "active", "error")
                     return {"success": False, "error": f"Embedding failed for {json_filename}", "step": "embed"}
 
                 total_embedded_count += embed_result.get('inserted_count', 0)
@@ -832,7 +878,7 @@ def update_repository_pipeline(
 
 
         # 8. 최종 상태를 'active'로 업데이트
-        RepositoryService.update_repository_status(db, repo_id, "active", "active")
+        update_repository_status(db, repo_id, "active", "active")
         logger.info(f"[{repo_name}] Update pipeline finished successfully.")
 
         return {
@@ -848,7 +894,7 @@ def update_repository_pipeline(
     except Exception as e:
         logger.error(f"[{repo_name}] An unexpected error occurred in update pipeline: {e}", exc_info=True)
         # 오류 발생 시 상태 업데이트
-        RepositoryService.update_repository_status(db, repo_id, "error", "error")
+        update_repository_status(db, repo_id, "error", "error")
         return {
             "success": False,
             "error": str(e),

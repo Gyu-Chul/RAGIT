@@ -214,14 +214,15 @@ services:
     image: ragit-rag-worker
     container_name: ragit-rag-worker
 
-    deploy:
-          resources:
-            reservations:
-              devices:
-                - driver: nvidia
-                  count: 1 # 1개의 GPU를 할당 (모두 할당하려면 'all')
-                  capabilities: [gpu]
-                  
+    ## GPU 설정 (GPU가 필요한 경우 주석 해제)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1 # 1개의 GPU를 할당 (모두 할당하려면 'all')
+    #           capabilities: [gpu]
+
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ragit
       REDIS_URL: redis://redis:6379/0

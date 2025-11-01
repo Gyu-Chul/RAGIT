@@ -439,15 +439,27 @@ class RepositorySettingsPage:
                         ui.notify(f'❌ Sync failed for "{repo_name}": {error_message}', color='negative', timeout=15000)
                     else:
                         ui.notify(f'❌ Sync failed for "{repo_name}". Please try again.', color='negative', timeout=10000)
-                    ui.navigate.reload()
+
+                    # 에러 메시지를 볼 수 있도록 잠시 대기 후 reload
+                    ui.timer(5.0, lambda: ui.navigate.reload(), once=True)
                     return
 
                 # 완료 상태 확인
                 if current_status == 'active' and vectordb_status == 'active':
                     if hasattr(self, 'sync_timer'):
                         self.sync_timer.active = False
-                    ui.notify(f'✅ Repository "{repo_name}" synchronized successfully!', color='positive', timeout=5000)
-                    ui.navigate.reload()
+
+                    # 변경사항이 있었는지 확인 (last_sync 시간 체크)
+                    # 빠르게 완료된 경우 (1초 이내) "변경사항 없음"으로 간주
+                    if check_count <= 2:
+                        ui.notify(f'ℹ️ Repository "{repo_name}" is already up to date. No changes detected.',
+                                 color='info', timeout=5000)
+                    else:
+                        ui.notify(f'✅ Repository "{repo_name}" synchronized successfully!',
+                                 color='positive', timeout=5000)
+
+                    # 알림을 볼 수 있도록 잠시 대기 후 reload
+                    ui.timer(3.0, lambda: ui.navigate.reload(), once=True)
                     return
 
                 # 최대 확인 횟수 초과

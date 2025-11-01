@@ -252,7 +252,7 @@ def sync_repository(
                     'repo_name': repository.name,
                     'collection_name': collection_name,
                     'save_json': True,
-                    'model_key': 'text-embedding-3-small'  # 기본 임베딩 모델
+                    'model_key': 'sfr-code-400m'  # 코드 검색 최적화 모델
                 }
             )
             logger.info(f"✅ Celery update task sent. Task ID: {task.id}")
