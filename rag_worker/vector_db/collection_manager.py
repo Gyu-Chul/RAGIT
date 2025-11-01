@@ -3,7 +3,7 @@ Milvus 컬렉션 관리 클래스
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pymilvus import (
     MilvusClient,
     DataType,
@@ -342,3 +342,63 @@ class CollectionManager:
         except Exception as e:
             logger.error(f"Failed to get entity count: {e}")
             raise CollectionNotFoundError(f"Failed to get entity count: {e}") from e
+        
+    def delete_entities_by_source_files(
+        self, collection_name: str, source_files: List[str]
+    ) -> Dict[str, Any]:
+        """
+        _source_file 필드를 기준으로 특정 파일들에 해당하는 모든 엔티티를 삭제
+
+        Args:
+            collection_name: 컬렉션 이름
+            source_files: 삭제할 엔티티들의 원본 파일명 리스트
+
+        Returns:
+            삭제 결과 딕셔너리
+        """
+        try:
+            # 1. 컬렉션 존재 여부 확인
+            self.validate_exists(collection_name)
+            self.client.load_collection(collection_name=collection_name)
+
+            # 2. 삭제할 파일 목록이 비어있으면 작업을 수행하지 않고 성공 반환
+            if not source_files:
+                logger.info(f"[{collection_name}] No source files provided for deletion. Skipping.")
+                return {"success": True, "deleted_count": 0, "message": "No files to delete."}
+
+            # 3. Milvus의 'IN' 연산자를 사용하는 필터 표현식 생성
+            formatted_files = [f"'{f}'" for f in source_files]
+            filter_expr = f"_source_file IN [{', '.join(formatted_files)}]"
+            
+            logger.info(f"[{collection_name}] Deleting entities with filter: {filter_expr}")
+
+            # 4. 삭제 실행
+            # MilvusClient.delete는 삭제된 pk 리스트 또는 MutationResult 객체를 반환합니다.
+            delete_result = self.client.delete(
+                collection_name=collection_name,
+                filter=filter_expr,
+            )
+            
+            # delete_result에서 삭제된 개수를 확인 (pymilvus 버전에 따라 다를 수 있음)
+            deleted_count = delete_result.delete_count if hasattr(delete_result, 'delete_count') else -1
+
+            logger.info(f"✅ [{collection_name}] Successfully deleted entities. Count: {deleted_count}")
+            
+            return {
+                "success": True,
+                "deleted_count": deleted_count,
+                "message": f"Successfully deleted entities from {len(source_files)} source files.",
+            }
+
+        except (CollectionNotFoundError, Exception) as e:
+            logger.error(f"[{collection_name}] Failed to delete entities: {e}")
+            return {
+                "success": False,
+                "deleted_count": 0,
+                "error": str(e),
+            }
+        finally:
+            # 작업이 끝나면 컬렉션을 메모리에서 해제하여 리소스를 절약
+            if self.exists(collection_name):
+                logger.info(f"[{collection_name}] Releasing collection from memory.")
+                self.client.release_collection(collection_name=collection_name)

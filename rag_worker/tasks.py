@@ -583,7 +583,7 @@ def chat_query(
         db.close()
 
 
-
+### ragit_sdk/tests/create_prompt.py
 @app.task
 def create_prompt(
     docs: List[SearchResult],
@@ -601,7 +601,7 @@ def create_prompt(
     """
     return prompt_service.create(docs, query)
 
-
+### ragit_sdk/tests/ask_question.py
 @app.task
 def call_llm(
         prompt: str, 
@@ -621,3 +621,230 @@ def call_llm(
         생성된 프롬프트
     """
     return call_service.ask_question(prompt=prompt, use_stream=use_stream, model=model, temperature=temperature, max_tokens=max_tokens)
+
+
+
+### ragit_sdk/tests/diff_file.py
+@app.task(name='rag_worker.tasks.run_git_diff')
+def run_git_diff(repo_name: str):
+    """
+    GitService의 diff_files 메서드를 테스트
+    """
+    return git_service.diff_files(repo_name)
+
+
+### ragit_sdk/tests/embedding.py
+@app.task(name='rag_worker.tasks.parse_and_embed_repository')
+def parse_and_embed_repository(repo_name: str, collection_name: str, model_key: str, save_json: bool = True):
+    """
+    레포지토리를 파싱하고, 그 결과를 즉시 Vector DB에 임베딩하는 통합 Test용 Celery Task
+    """
+    # --- 1단계: 코드 파싱 및 청킹 ---
+    parse_result = parser_service.parse_repository(
+        repo_name=repo_name,
+        save_json=save_json
+    )
+
+    if not parse_result.get('success'):
+        # 실패 시 에러 정보를 포함하여 즉시 반환
+        return {
+            "success": False,
+            "step": "parse",
+            "error": parse_result.get('message'),
+            "repo_name": repo_name
+        }
+
+    # --- 2단계: Vector DB 임베딩 ---
+    embed_result = vector_db_service.embed_repository(
+        repo_name=repo_name,
+        collection_name=collection_name,
+        model_key=model_key
+    )
+
+    if not embed_result.get('success'):
+        return {
+            "success": False,
+            "step": "embed",
+            "error": embed_result.get('message'),
+            "repo_name": repo_name
+        }
+
+    # 최종 성공 결과 반환
+    return {
+        "success": True,
+        "repo_name": repo_name,
+        "collection_name": collection_name,
+        "parsed_files": parse_result.get('total_files'),
+        "total_chunks": embed_result.get('total_chunks'),
+        "embedded_count": embed_result.get('inserted_count'),
+        "message": "Repository parsed and embedded successfully."
+    }
+
+
+# repository 최신 동기화 통합 작업 (update 기능)
+@app.task(name='rag_worker.tasks.update_repository_pipeline')
+def update_repository_pipeline(
+    repo_id: str,
+    repo_name: str,
+    collection_name: str,
+    save_json: bool = True,
+    model_key: str = DEFAULT_MODEL_KEY,
+) -> Dict[str, Any]:
+    """
+    Repository 업데이트 최적화 파이프라인
+    1. Local vs Remote diff 찾기
+    2. Git Pull 로 최신 코드 받기
+    3. Vector DB에서 변경된 파일의 기존 데이터 삭제
+    4. 레포지토리 전체 재-파싱하여 JSON 파일 최신화
+    5. 변경된 JSON 파일만 다시 임베딩
+    
+    Args:
+        repo_id: Repository ID (UUID)
+        repo_name: Repository 이름
+        collection_name: Vector DB 컬렉션 이름
+        save_json: JSON 파일로 저장 여부
+        model_key: 임베딩 모델 키
+
+    Returns:
+        처리 결과
+    """
+    import os
+    import logging
+    from pathlib import Path
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    logger = logging.getLogger(__name__)
+
+
+    env_local_path = Path(__file__).parent.parent / '.env.local'
+    if env_local_path.exists():
+        DATABASE_URL = None
+        with open(env_local_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('DATABASE_URL='):
+                    DATABASE_URL = line.split('=', 1)[1]
+                    break
+        if DATABASE_URL:
+            os.environ['DATABASE_URL'] = DATABASE_URL
+        else:
+            DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/ragit'
+            os.environ['DATABASE_URL'] = DATABASE_URL
+    else:
+        DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/ragit')
+    
+    from backend.services.repository_service import RepositoryService
+
+    engine = create_engine(DATABASE_URL)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = SessionLocal()
+    logger.info(f"🔗 [{repo_name}] Database connection created for update pipeline.")
+
+    try:
+        # 1. 상태를 'updating'으로 업데이트
+        RepositoryService.update_repository_status(db, repo_id, "updating", "pending")
+
+        # 2. PULL 하기 전, 먼저 변경될 파일 목록(diff) 확보
+        logger.info(f"[{repo_name}] Step 1: Finding diff...")
+        diff_result = git_service.diff_files(repo_name)
+        if not diff_result.get('success'):
+            RepositoryService.update_repository_status(db, repo_id, "active", "error")
+            return {"success": False, "error": f"Failed to get diff: {diff_result.get('error')}", "step": "diff"}
+        
+        files_to_update = diff_result.get("files", [])
+        logger.info(f"[{repo_name}] Found {len(files_to_update)} files to update.")
+
+        # 3. Git Pull 로 로컬 코드 최신화
+        logger.info(f"[{repo_name}] Step 2: Pulling latest changes.")
+        pull_result = git_service.pull_repository(repo_name)
+        if not pull_result.get('success'):
+            RepositoryService.update_repository_status(db, repo_id, "error", "error")
+            return {"success": False, "error": f"Git pull failed: {pull_result.get('error')}", "step": "pull"}
+        
+        # 4. Vector DB 상태를 'updating'으로 변경
+        RepositoryService.update_repository_status(db, repo_id, "updating", "updating")
+
+        # 5. 확보한 목록으로 Vector DB의 기존 엔티티 삭제
+        deleted_count = 0
+        if files_to_update:
+            num_files_to_delete = len(files_to_update)
+            logger.info(f"[{repo_name}] Step 3: Deleting old entities...")
+            delete_result = vector_db_service.delete_entities(
+                collection_name=collection_name, 
+                source_files=files_to_update
+            )
+            if not delete_result.get('success'):
+                RepositoryService.update_repository_status(db, repo_id, "active", "error")
+                return {"success": False, "error": f"Failed to delete entities: {delete_result.get('error')}", "step": "delete_entities"}
+            deleted_count = num_files_to_delete
+            logger.info(f"[{repo_name}] Deleted {deleted_count} old entities.")
+        else:
+            logger.info(f"[{repo_name}] Step 3: No entities to delete, skipping.")
+
+        # 6. 최신 코드로 레포지토리 전체를 다시 파싱 (JSON 파일들의 내용을 최신으로 업데이트하기 위해 필수)
+        logger.info(f"[{repo_name}] Step 4: Re-parsing entire repository to update JSON files.")
+        parse_result = parser_service.parse_repository(repo_name, save_json)
+        if not parse_result.get('success'):
+            RepositoryService.update_repository_status(db, repo_id, "error", "error")
+            return {"success": False, "error": f"Parsing failed: {parse_result.get('message')}", "step": "parse"}
+        
+        file_count = parse_result.get('total_files', 0)
+        RepositoryService.update_file_count(db, repo_id, file_count)
+
+        # 7. 변경된 파일 목록(files_to_update)에 해당하는 JSON 파일만 다시 임베딩
+        logger.info(f"[{repo_name}] Step 5: Re-embedding only changed files...")
+        total_embedded_count = 0
+        if files_to_update:
+            # 파싱된 JSON 파일이 저장된 기본 경로 (parser_service의 경로 구조에 맞춰야 함)
+            parsed_repo_path = Path(f"parsed_repository/{repo_name}")
+
+            for json_filename in files_to_update:
+                json_file_path = parsed_repo_path / json_filename
+                
+                if not json_file_path.exists():
+                    logger.warning(f"[{repo_name}] Parsed file {json_file_path} not found. It might have been deleted. Skipping embedding.")
+                    continue
+
+                embed_result = vector_db_service.embed_documents(
+                    json_path=str(json_file_path),
+                    collection_name=collection_name,
+                    model_key=model_key
+                )
+                if not embed_result.get('success'):
+                    RepositoryService.update_repository_status(db, repo_id, "active", "error")
+                    return {"success": False, "error": f"Embedding failed for {json_filename}", "step": "embed"}
+                
+                total_embedded_count += embed_result.get('inserted_count', 0)
+            
+            logger.info(f"[{repo_name}] Re-embedded {total_embedded_count} new chunks from {len(files_to_update)} files.")
+        else:
+            logger.info(f"[{repo_name}] Step 5: No files to re-embed, skipping.")
+
+
+        # 8. 최종 상태를 'active'로 업데이트
+        RepositoryService.update_repository_status(db, repo_id, "active", "active")
+        logger.info(f"[{repo_name}] Update pipeline finished successfully.")
+
+        return {
+            "success": True,
+            "repo_id": repo_id,
+            "repo_name": repo_name,
+            "file_count": file_count,
+            "deleted_count": deleted_count,
+            "embedded_count": total_embedded_count,
+            "message": "Repository updated successfully"
+        }
+
+    except Exception as e:
+        logger.error(f"[{repo_name}] An unexpected error occurred in update pipeline: {e}", exc_info=True)
+        # 오류 발생 시 상태 업데이트
+        RepositoryService.update_repository_status(db, repo_id, "error", "error")
+        return {
+            "success": False,
+            "error": str(e),
+            "step": "unknown"
+        }
+    finally:
+        db.close()
+        logger.info(f"[{repo_name}] Database connection closed for update pipeline.")

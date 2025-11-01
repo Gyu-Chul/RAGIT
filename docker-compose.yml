@@ -198,8 +198,21 @@ services:
 
   # RAG Worker Service
   rag-worker:
-    image: minchulshin/ragit-rag-worker:latest
+    ## image: minchulshin/ragit-rag-worker:latest
     container_name: ragit-rag-worker
+
+    build:
+      context: . 
+      dockerfile: rag_worker/Dockerfile 
+
+    deploy:
+          resources:
+            reservations:
+              devices:
+                - driver: nvidia
+                  count: 1 # 1개의 GPU를 할당 (모두 할당하려면 'all')
+                  capabilities: [gpu]
+                  
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ragit
       REDIS_URL: redis://redis:6379/0
