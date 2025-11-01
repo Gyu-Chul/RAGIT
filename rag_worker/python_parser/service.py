@@ -211,6 +211,14 @@ class RepositoryParserService:
         try:
             # 상대 경로 계산
             relative_path = file_path.relative_to(repo_path)
+            relative_path_str = str(relative_path).replace('\\', '/')
+
+            # chunks의 file_path를 상대 경로로 변환
+            chunks_with_relative_path = []
+            for chunk in chunks:
+                chunk_dict = dict(chunk) if isinstance(chunk, dict) else chunk
+                chunk_dict['file_path'] = relative_path_str
+                chunks_with_relative_path.append(chunk_dict)
 
             # 출력 경로 생성
             output_base = self.get_output_path(repo_name)
@@ -221,7 +229,7 @@ class RepositoryParserService:
 
             # JSON 저장
             with open(output_file, "w", encoding="utf-8") as f:
-                json.dump(chunks, f, ensure_ascii=False, indent=2)
+                json.dump(chunks_with_relative_path, f, ensure_ascii=False, indent=2)
 
             logger.debug(f"Saved chunks to {output_file}")
 

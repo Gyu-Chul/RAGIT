@@ -210,6 +210,37 @@ class APIService:
         """Search user by email"""
         return self._make_request("GET", f"/auth/users/search?email={email}")
 
+    async def get_code_history(self, repo_id: str, file_path: str, line_info: str = None, node_name: str = None, node_type: str = "function") -> Dict[str, Any]:
+        """Get code history for a specific node in a file"""
+        try:
+            data = {
+                "repo_id": repo_id,
+                "file_path": file_path,
+                "node_type": node_type
+            }
+
+            # line_info가 있으면 추가 (백엔드에서 node_name을 자동으로 찾도록)
+            if line_info:
+                data["line_info"] = line_info
+
+            # node_name이 명시적으로 제공되면 추가
+            if node_name:
+                data["node_name"] = node_name
+            # 동기 함수를 비동기로 래핑
+            import asyncio
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._make_request("POST", "/api/repositories/code-history", data)
+            )
+            return response
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "history": []
+            }
+
 # Global instance - will be initialized with auth_service in app.py
 api_service = None
 

@@ -9,6 +9,7 @@ import stat
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+from .history_tracker import FunctionHistoryTracker
 
 from .exceptions import (
     RepositoryNotFoundError,
@@ -403,3 +404,29 @@ class GitService:
                 "error": str(e)
             }
 
+
+
+#################### history tracker 실행 예시
+# if __name__ == "__main__":
+#     REPO_PATH = "./RAGIT"  # 분석할 Git 저장소 경로 (clone된 원본 소스코드)
+#     FILE_PATH_TO_TRACE = "rag_worker/ask_question/ask_question.py" # 실제 파일 경로
+#     # --- 추적 대상 설정 ---
+#     NODE_TO_TRACE = "AskQuestion"  # 추적할 클래스 또는 함수 이름
+#     NODE_TYPE_TO_TRACE = "class"   # 'function' 또는 'class'
+
+#     # 실행
+#     tracker = FunctionHistoryTracker(REPO_PATH)
+#     function_history = tracker.trace_history(FILE_PATH_TO_TRACE, NODE_TO_TRACE, NODE_TYPE_TO_TRACE)
+
+#     # 결과 출력
+#     if not function_history:
+#         print("해당 함수의 변경 이력을 찾지 못했습니다.")
+#     else:
+#         print(f"'{NODE_TO_TRACE}' 함수의 변경 이력 (총 {len(function_history)}회 변경)")
+#         print("="*60)
+#         for change in function_history:
+#             print(f"Commit: {change.commit_hash} by {change.author} on {change.date}")
+#             print(f"Message: {change.commit_message}\n")
+#             print("--- Diff ---")
+#             print(change.highlighted_diff)
+#             print("="*60)

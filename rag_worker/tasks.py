@@ -13,6 +13,8 @@ from .vector_db import VectorDBService
 from .vector_db.types import EmbeddingResult, SearchResult
 from .vector_db.config import DEFAULT_MODEL_KEY
 from .ask_question import AskQuestion, PromptGenerator
+from .git_service.history_tracker import FunctionHistoryTracker
+from .git_service.types import CommitChange
 
 # 서비스 인스턴스 생성
 git_service = GitService()
@@ -488,9 +490,13 @@ def chat_query(
                     logger.info(f"✅ LLM response received")
                     logger.info(f"📝 Response preview: {bot_response[:200]}")
 
-                    # sources를 JSON 문자열로 저장
+                    # sources를 JSON 문자열로 저장 (노드 이름 포함)
                     sources = json.dumps([
-                        f"{code['file_path']}:{code['start_line']}-{code['end_line']}"
+                        {
+                            "path": f"{code['file_path']}:{code['start_line']}-{code['end_line']}",
+                            "name": code.get('name', 'unknown'),
+                            "type": code.get('type', 'function')
+                        }
                         for code in retrieved_codes
                     ], ensure_ascii=False)
 
@@ -532,7 +538,11 @@ def chat_query(
 검색된 코드 조각들을 참고하시면 답변을 얻으실 수 있을 것입니다."""
 
                     sources = json.dumps([
-                        f"{code['file_path']}:{code['start_line']}-{code['end_line']}"
+                        {
+                            "path": f"{code['file_path']}:{code['start_line']}-{code['end_line']}",
+                            "name": code.get('name', 'unknown'),
+                            "type": code.get('type', 'function')
+                        }
                         for code in retrieved_codes
                     ], ensure_ascii=False)
             else:
@@ -623,7 +633,6 @@ def call_llm(
     return call_service.ask_question(prompt=prompt, use_stream=use_stream, model=model, temperature=temperature, max_tokens=max_tokens)
 
 
-
 ### ragit_sdk/tests/diff_file.py
 @app.task(name='rag_worker.tasks.run_git_diff')
 def run_git_diff(repo_name: str):
@@ -697,7 +706,7 @@ def update_repository_pipeline(
     3. Vector DB에서 변경된 파일의 기존 데이터 삭제
     4. 레포지토리 전체 재-파싱하여 JSON 파일 최신화
     5. 변경된 JSON 파일만 다시 임베딩
-    
+
     Args:
         repo_id: Repository ID (UUID)
         repo_name: Repository 이름
@@ -733,7 +742,7 @@ def update_repository_pipeline(
             os.environ['DATABASE_URL'] = DATABASE_URL
     else:
         DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/ragit')
-    
+
     from backend.services.repository_service import RepositoryService
 
     engine = create_engine(DATABASE_URL)
@@ -751,7 +760,7 @@ def update_repository_pipeline(
         if not diff_result.get('success'):
             RepositoryService.update_repository_status(db, repo_id, "active", "error")
             return {"success": False, "error": f"Failed to get diff: {diff_result.get('error')}", "step": "diff"}
-        
+
         files_to_update = diff_result.get("files", [])
         logger.info(f"[{repo_name}] Found {len(files_to_update)} files to update.")
 
@@ -761,7 +770,7 @@ def update_repository_pipeline(
         if not pull_result.get('success'):
             RepositoryService.update_repository_status(db, repo_id, "error", "error")
             return {"success": False, "error": f"Git pull failed: {pull_result.get('error')}", "step": "pull"}
-        
+
         # 4. Vector DB 상태를 'updating'으로 변경
         RepositoryService.update_repository_status(db, repo_id, "updating", "updating")
 
@@ -771,7 +780,7 @@ def update_repository_pipeline(
             num_files_to_delete = len(files_to_update)
             logger.info(f"[{repo_name}] Step 3: Deleting old entities...")
             delete_result = vector_db_service.delete_entities(
-                collection_name=collection_name, 
+                collection_name=collection_name,
                 source_files=files_to_update
             )
             if not delete_result.get('success'):
@@ -788,7 +797,7 @@ def update_repository_pipeline(
         if not parse_result.get('success'):
             RepositoryService.update_repository_status(db, repo_id, "error", "error")
             return {"success": False, "error": f"Parsing failed: {parse_result.get('message')}", "step": "parse"}
-        
+
         file_count = parse_result.get('total_files', 0)
         RepositoryService.update_file_count(db, repo_id, file_count)
 
@@ -801,7 +810,7 @@ def update_repository_pipeline(
 
             for json_filename in files_to_update:
                 json_file_path = parsed_repo_path / json_filename
-                
+
                 if not json_file_path.exists():
                     logger.warning(f"[{repo_name}] Parsed file {json_file_path} not found. It might have been deleted. Skipping embedding.")
                     continue
@@ -814,9 +823,9 @@ def update_repository_pipeline(
                 if not embed_result.get('success'):
                     RepositoryService.update_repository_status(db, repo_id, "active", "error")
                     return {"success": False, "error": f"Embedding failed for {json_filename}", "step": "embed"}
-                
+
                 total_embedded_count += embed_result.get('inserted_count', 0)
-            
+
             logger.info(f"[{repo_name}] Re-embedded {total_embedded_count} new chunks from {len(files_to_update)} files.")
         else:
             logger.info(f"[{repo_name}] Step 5: No files to re-embed, skipping.")
@@ -848,3 +857,140 @@ def update_repository_pipeline(
     finally:
         db.close()
         logger.info(f"[{repo_name}] Database connection closed for update pipeline.")
+
+
+@app.task(name='rag_worker.tasks.get_code_history')
+def get_code_history(
+    repo_id: str,
+    file_path: str,
+    node_name: Optional[str] = None,
+    node_type: Optional[str] = None,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    파일 또는 코드의 Git 히스토리를 추적
+
+    Args:
+        repo_id: 레포지토리 ID
+        file_path: 파일 경로 (예: src/utils/helper.py)
+        node_name: 추적할 함수/클래스 이름 (None이면 전체 파일 추적)
+        node_type: 노드 타입 (None이면 전체 파일 추적)
+        start_line: 시작 라인 (module/script의 경우 사용)
+        end_line: 종료 라인 (module/script의 경우 사용)
+
+    Returns:
+        히스토리 정보
+    """
+    import os
+    import logging
+    from pathlib import Path
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # DATABASE_URL 설정
+        env_local_path = Path(__file__).parent.parent / '.env.local'
+
+        if env_local_path.exists():
+            DATABASE_URL = None
+            with open(env_local_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('DATABASE_URL='):
+                        DATABASE_URL = line.split('=', 1)[1]
+                        break
+
+            if DATABASE_URL:
+                os.environ['DATABASE_URL'] = DATABASE_URL
+                logger.info(f"✅ Set DATABASE_URL from .env.local")
+            else:
+                DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/ragit'
+                os.environ['DATABASE_URL'] = DATABASE_URL
+                logger.warning(f"⚠️ DATABASE_URL not found in .env.local, using default")
+        else:
+            DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/ragit')
+            logger.info(f"⚠️ .env.local not found, using environment")
+
+        # DB에서 repo_name 조회
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine(DATABASE_URL)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        db = SessionLocal()
+
+        try:
+            result = db.execute(
+                text("SELECT name FROM repositories WHERE id = :repo_id"),
+                {"repo_id": repo_id}
+            ).fetchone()
+
+            if result:
+                repo_name = result[0]
+                logger.info(f"✅ Found repo_name from DB: {repo_name}")
+            else:
+                logger.error(f"❌ Repository not found in DB for repo_id: {repo_id}")
+                return {
+                    "success": False,
+                    "error": f"Repository not found for repo_id: {repo_id}",
+                    "history": []
+                }
+        finally:
+            db.close()
+
+        # Repository 경로 구성
+        repo_base_path = Path("repository")
+        actual_repo_path = repo_base_path / repo_name
+
+        logger.info(f"🔍 Looking for repository at: {actual_repo_path}")
+
+        if not actual_repo_path.exists():
+            return {
+                "success": False,
+                "error": f"Repository not found at {actual_repo_path}",
+                "history": []
+            }
+
+        # FunctionHistoryTracker 초기화
+        tracker = FunctionHistoryTracker(str(actual_repo_path))
+
+        # 히스토리 추적
+        if node_name is None and node_type is None:
+            logger.info(f"📖 Tracking full file history for {file_path}")
+        else:
+            logger.info(f"📖 Tracking history for {node_type} '{node_name}' in {file_path} (lines {start_line}-{end_line})")
+        history = tracker.trace_history(file_path, node_name, node_type, start_line, end_line)
+
+        # CommitChange 객체를 딕셔너리로 변환
+        history_dicts = []
+        for change in history:
+            history_dicts.append({
+                "commit_hash": change.commit_hash,
+                "commit_message": change.commit_message,
+                "author": change.author,
+                "date": change.date,
+                "code_before": change.code_before,
+                "code_after": change.code_after,
+                "highlighted_diff": change.highlighted_diff
+            })
+
+        logger.info(f"✅ Found {len(history_dicts)} changes for {node_name}")
+
+        return {
+            "success": True,
+            "repo_id": repo_id,
+            "file_path": file_path,
+            "node_name": node_name,
+            "node_type": node_type,
+            "history": history_dicts,
+            "total_changes": len(history_dicts)
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Error tracking history: {str(e)}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "history": []
+        }

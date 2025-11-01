@@ -198,9 +198,42 @@ class ChatPage:
 
                                 with ui.column().style('gap: 6px;'):
                                     for i, source in enumerate(sources):
-                                        with ui.row().style('align-items: center; gap: 8px; padding: 6px 8px; background: rgba(255,255,255,0.7); border-radius: 6px; border: 1px solid rgba(14,165,233,0.2);'):
-                                            ui.html(f'<div style="width: 16px; height: 16px; background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); border-radius: 3px; display: flex; align-items: center; justify-content: center; color: white; font-size: 8px; font-weight: 600;">{i+1}</div>')
-                                            ui.html(f'<div style="font-size: 12px; color: #1e40af; font-family: monospace;">{source}</div>')
+                                        # 새로운 형식 또는 기존 형식 모두 지원
+                                        if isinstance(source, dict):
+                                            # 새로운 형식 (딕셔너리)
+                                            path = source.get('path', '')
+                                            node_name = source.get('name', 'unknown')
+                                            node_type = source.get('type', 'function')
+
+                                            # 파일 경로와 라인 정보 추출
+                                            parts = path.split(':')
+                                            if len(parts) >= 2:
+                                                file_path = parts[0]
+                                                line_info = parts[1] if len(parts) > 1 else ""
+
+                                                with ui.row().style('align-items: center; gap: 8px; padding: 6px 8px; background: rgba(255,255,255,0.7); border-radius: 6px; border: 1px solid rgba(14,165,233,0.2); cursor: pointer; transition: all 0.2s;').on('click', lambda fp=file_path, li=line_info, nn=node_name, nt=node_type: self.show_code_history_modal_with_node(fp, li, nn, nt)):
+                                                    ui.html(f'<div style="width: 16px; height: 16px; background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); border-radius: 3px; display: flex; align-items: center; justify-content: center; color: white; font-size: 8px; font-weight: 600;">{i+1}</div>')
+                                                    ui.html(f'<div style="font-size: 12px; color: #1e40af; font-family: monospace; text-decoration: underline;">{path} <span style="color: #6b7280;">({node_name})</span></div>')
+                                                    ui.html('<div style="font-size: 10px; color: #6b7280; margin-left: auto;">📖 View History</div>')
+                                            else:
+                                                with ui.row().style('align-items: center; gap: 8px; padding: 6px 8px; background: rgba(255,255,255,0.7); border-radius: 6px; border: 1px solid rgba(14,165,233,0.2);'):
+                                                    ui.html(f'<div style="width: 16px; height: 16px; background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); border-radius: 3px; display: flex; align-items: center; justify-content: center; color: white; font-size: 8px; font-weight: 600;">{i+1}</div>')
+                                                    ui.html(f'<div style="font-size: 12px; color: #1e40af; font-family: monospace;">{path}</div>')
+                                        else:
+                                            # 기존 형식 (문자열)
+                                            parts = source.split(':')
+                                            if len(parts) >= 2:
+                                                file_path = parts[0]
+                                                line_info = parts[1] if len(parts) > 1 else ""
+
+                                                with ui.row().style('align-items: center; gap: 8px; padding: 6px 8px; background: rgba(255,255,255,0.7); border-radius: 6px; border: 1px solid rgba(14,165,233,0.2); cursor: pointer; transition: all 0.2s;').on('click', lambda fp=file_path, li=line_info: self.show_code_history_modal(fp, li)):
+                                                    ui.html(f'<div style="width: 16px; height: 16px; background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); border-radius: 3px; display: flex; align-items: center; justify-content: center; color: white; font-size: 8px; font-weight: 600;">{i+1}</div>')
+                                                    ui.html(f'<div style="font-size: 12px; color: #1e40af; font-family: monospace; text-decoration: underline;">{source}</div>')
+                                                    ui.html('<div style="font-size: 10px; color: #6b7280; margin-left: auto;">📖 View History</div>')
+                                            else:
+                                                with ui.row().style('align-items: center; gap: 8px; padding: 6px 8px; background: rgba(255,255,255,0.7); border-radius: 6px; border: 1px solid rgba(14,165,233,0.2);'):
+                                                    ui.html(f'<div style="width: 16px; height: 16px; background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); border-radius: 3px; display: flex; align-items: center; justify-content: center; color: white; font-size: 8px; font-weight: 600;">{i+1}</div>')
+                                                    ui.html(f'<div style="font-size: 12px; color: #1e40af; font-family: monospace;">{source}</div>')
 
                 ui.element('div').style('flex: 1;')  # spacer
 
@@ -545,3 +578,208 @@ class ChatPage:
         """로딩 상태 복원 (지연 실행)"""
         self.show_bot_loading()
         self.start_polling_for_bot_response()
+
+    def show_code_history_modal_with_node(self, file_path: str, line_info: str, node_name: str, node_type: str):
+        """코드 히스토리 모달 창 표시 (노드 이름 포함)"""
+        from nicegui import ui
+        import asyncio
+
+        # 모달 다이얼로그 생성
+        with ui.dialog() as dialog, ui.card().style('width: 90%; max-width: 1200px; height: 80vh; display: flex; flex-direction: column;'):
+            # 모달 헤더
+            with ui.row().style('justify-content: space-between; align-items: center; padding: 16px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(90deg, #f8fafc 0%, #e2e8f0 100%);'):
+                with ui.row().style('align-items: center; gap: 12px;'):
+                    ui.html('<div style="font-size: 24px;">📖</div>')
+                    ui.html(f'<h3 style="margin: 0; font-size: 18px; font-weight: 600;">Code History: {file_path}</h3>')
+                ui.button(icon='close', on_click=dialog.close).props('flat')
+
+            # 로딩 상태
+            loading_container = ui.column().style('flex: 1; align-items: center; justify-content: center; padding: 24px;')
+            with loading_container:
+                ui.spinner(size='lg')
+                ui.html('<p style="margin-top: 16px; color: #6b7280;">Loading history...</p>')
+
+            # 비동기로 히스토리 데이터 로드
+            async def load_history():
+                try:
+                    # node_name이 이미 있으므로 직접 전달
+                    response = await self.api_service.get_code_history(
+                        self.repo_id,
+                        file_path,
+                        node_name=node_name,
+                        node_type=node_type
+                    )
+
+                    # 로딩 컨테이너 제거
+                    loading_container.clear()
+
+                    if response.get('success'):
+                        history = response.get('history', [])
+                        # response에서 실제 node_name과 node_type 가져오기
+                        actual_node_name = response.get('node_name', node_name)
+                        actual_node_type = response.get('node_type', node_type)
+
+                        if history:
+                            # 히스토리 컨텐츠 표시
+                            with loading_container:
+                                # 스크롤 가능한 컨테이너
+                                with ui.element('div').style('width: 100%; height: 100%; overflow-y: auto; padding: 16px;'):
+                                    ui.html(f'<p style="color: #374151; margin-bottom: 16px;">Found <strong>{len(history)}</strong> changes for {actual_node_type} <code>{actual_node_name}</code></p>')
+
+                                    # 각 변경사항 표시
+                                    for change in history:
+                                        with ui.card().style('margin-bottom: 16px; border: 1px solid #e5e7eb;'):
+                                            # 커밋 정보 헤더
+                                            with ui.row().style('padding: 12px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; align-items: center; gap: 16px;'):
+                                                ui.html(f'<div style="background: #3b82f6; color: white; padding: 4px 8px; border-radius: 4px; font-family: monospace; font-size: 12px;">{change["commit_hash"]}</div>')
+                                                with ui.column().style('flex: 1;'):
+                                                    ui.html(f'<div style="font-weight: 600; color: #111827;">{change["commit_message"]}</div>')
+                                                    ui.html(f'<div style="font-size: 12px; color: #6b7280;">by {change["author"]} • {change["date"]}</div>')
+
+                                            # Diff 표시
+                                            if change.get('highlighted_diff'):
+                                                with ui.element('div').style('padding: 12px; background: #f9fafb;'):
+                                                    ui.html('<div style="font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 8px;">Changes:</div>')
+                                                    with ui.element('pre').style('background: #1f2937; color: #f3f4f6; padding: 12px; border-radius: 4px; font-family: monospace; font-size: 12px; overflow-x: auto; margin: 0;'):
+                                                        # Diff를 HTML로 변환
+                                                        diff_html = self._format_diff_as_html(change['highlighted_diff'])
+                                                        ui.html(diff_html)
+                        else:
+                            # 히스토리가 없는 경우
+                            with loading_container:
+                                ui.html('<div style="text-align: center; padding: 48px;">')
+                                ui.html('<div style="font-size: 48px; color: #9ca3af; margin-bottom: 16px;">📭</div>')
+                                ui.html('<p style="color: #6b7280;">No history found for this code segment.</p>')
+                                ui.html('</div>')
+                    else:
+                        # 에러 처리
+                        with loading_container:
+                            ui.html('<div style="text-align: center; padding: 48px;">')
+                            ui.html('<div style="font-size: 48px; color: #ef4444; margin-bottom: 16px;">❌</div>')
+                            ui.html(f'<p style="color: #dc2626;">Failed to load history: {response.get("error", "Unknown error")}</p>')
+                            ui.html('</div>')
+
+                except Exception as e:
+                    # 예외 처리
+                    loading_container.clear()
+                    with loading_container:
+                        ui.html('<div style="text-align: center; padding: 48px;">')
+                        ui.html('<div style="font-size: 48px; color: #ef4444; margin-bottom: 16px;">⚠️</div>')
+                        ui.html(f'<p style="color: #dc2626;">An error occurred: {str(e)}</p>')
+                        ui.html('</div>')
+
+            # 비동기 작업 실행
+            asyncio.create_task(load_history())
+
+        # 모달 열기
+        dialog.open()
+
+    def show_code_history_modal(self, file_path: str, line_info: str):
+        """코드 히스토리 모달 창 표시"""
+        from nicegui import ui
+        import asyncio
+
+        # 모달 다이얼로그 생성
+        with ui.dialog() as dialog, ui.card().style('width: 90%; max-width: 1200px; height: 80vh; display: flex; flex-direction: column;'):
+            # 모달 헤더
+            with ui.row().style('justify-content: space-between; align-items: center; padding: 16px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(90deg, #f8fafc 0%, #e2e8f0 100%);'):
+                with ui.row().style('align-items: center; gap: 12px;'):
+                    ui.html('<div style="font-size: 24px;">📖</div>')
+                    ui.html(f'<h3 style="margin: 0; font-size: 18px; font-weight: 600;">Code History: {file_path}</h3>')
+                ui.button(icon='close', on_click=dialog.close).props('flat')
+
+            # 로딩 상태
+            loading_container = ui.column().style('flex: 1; align-items: center; justify-content: center; padding: 24px;')
+            with loading_container:
+                ui.spinner(size='lg')
+                ui.html('<p style="margin-top: 16px; color: #6b7280;">Loading history...</p>')
+
+            # 비동기로 히스토리 데이터 로드
+            async def load_history():
+                try:
+                    # Backend API가 line_info를 받아서 자동으로 node_name을 찾도록 함
+                    # API 호출 (line_info 전달)
+                    response = await self.api_service.get_code_history(
+                        self.repo_id,
+                        file_path,
+                        line_info=line_info  # line_info 전달
+                    )
+
+                    # 로딩 컨테이너 제거
+                    loading_container.clear()
+
+                    if response.get('success'):
+                        history = response.get('history', [])
+                        # response에서 실제 node_name과 node_type 가져오기
+                        actual_node_name = response.get('node_name', 'unknown')
+                        actual_node_type = response.get('node_type', 'function')
+
+                        if history:
+                            # 히스토리 컨텐츠 표시
+                            with loading_container:
+                                # 스크롤 가능한 컨테이너
+                                with ui.element('div').style('width: 100%; height: 100%; overflow-y: auto; padding: 16px;'):
+                                    ui.html(f'<p style="color: #374151; margin-bottom: 16px;">Found <strong>{len(history)}</strong> changes for {actual_node_type} <code>{actual_node_name}</code></p>')
+
+                                    # 각 변경사항 표시
+                                    for change in history:
+                                        with ui.card().style('margin-bottom: 16px; border: 1px solid #e5e7eb;'):
+                                            # 커밋 정보 헤더
+                                            with ui.row().style('padding: 12px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; align-items: center; gap: 16px;'):
+                                                ui.html(f'<div style="background: #3b82f6; color: white; padding: 4px 8px; border-radius: 4px; font-family: monospace; font-size: 12px;">{change["commit_hash"]}</div>')
+                                                with ui.column().style('flex: 1;'):
+                                                    ui.html(f'<div style="font-weight: 600; color: #111827;">{change["commit_message"]}</div>')
+                                                    ui.html(f'<div style="font-size: 12px; color: #6b7280;">by {change["author"]} • {change["date"]}</div>')
+
+                                            # Diff 표시
+                                            if change.get('highlighted_diff'):
+                                                with ui.element('div').style('padding: 12px; background: #f9fafb;'):
+                                                    ui.html('<div style="font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 8px;">Changes:</div>')
+                                                    with ui.element('pre').style('background: #1f2937; color: #f3f4f6; padding: 12px; border-radius: 4px; font-family: monospace; font-size: 12px; overflow-x: auto; margin: 0;'):
+                                                        # Diff를 HTML로 변환
+                                                        diff_html = self._format_diff_as_html(change['highlighted_diff'])
+                                                        ui.html(diff_html)
+                        else:
+                            # 히스토리가 없는 경우
+                            with loading_container:
+                                ui.html('<div style="text-align: center; padding: 48px;">')
+                                ui.html('<div style="font-size: 48px; color: #9ca3af; margin-bottom: 16px;">📭</div>')
+                                ui.html('<p style="color: #6b7280;">No history found for this code segment.</p>')
+                                ui.html('</div>')
+                    else:
+                        # 에러 처리
+                        with loading_container:
+                            ui.html('<div style="text-align: center; padding: 48px;">')
+                            ui.html('<div style="font-size: 48px; color: #ef4444; margin-bottom: 16px;">❌</div>')
+                            ui.html(f'<p style="color: #dc2626;">Failed to load history: {response.get("error", "Unknown error")}</p>')
+                            ui.html('</div>')
+
+                except Exception as e:
+                    # 예외 처리
+                    loading_container.clear()
+                    with loading_container:
+                        ui.html('<div style="text-align: center; padding: 48px;">')
+                        ui.html('<div style="font-size: 48px; color: #ef4444; margin-bottom: 16px;">⚠️</div>')
+                        ui.html(f'<p style="color: #dc2626;">An error occurred: {str(e)}</p>')
+                        ui.html('</div>')
+
+            # 비동기 작업 실행
+            asyncio.create_task(load_history())
+
+        # 모달 열기
+        dialog.open()
+
+    def _format_diff_as_html(self, diff_text: str) -> str:
+        """Diff 텍스트를 HTML로 포맷팅"""
+        lines = diff_text.split('\n')
+        formatted_lines = []
+
+        for line in lines:
+            if line.startswith('+'):
+                formatted_lines.append(f'<span style="color: #10b981;">+ {line[1:]}</span>')
+            elif line.startswith('-'):
+                formatted_lines.append(f'<span style="color: #ef4444;">- {line[1:]}</span>')
+            else:
+                formatted_lines.append(f'<span style="color: #9ca3af;">{line}</span>')
+
+        return '<br>'.join(formatted_lines)

@@ -125,7 +125,10 @@ services:
 
   # Backend Service
   backend:
-    image: minchulshin/ragit-backend:latest
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: ragit-backend
     container_name: ragit-backend
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ragit
@@ -152,7 +155,10 @@ services:
 
   # Gateway Service
   gateway:
-    image: minchulshin/ragit-gateway:latest
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    image: ragit-gateway
     container_name: ragit-gateway
     environment:
       BACKEND_URL: http://backend:8001
@@ -174,7 +180,10 @@ services:
 
   # Frontend Service
   frontend:
-    image: minchulshin/ragit-frontend:latest
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: ragit-frontend
     container_name: ragit-frontend
     environment:
       GATEWAY_URL: http://gateway:8080
@@ -199,11 +208,11 @@ services:
   # RAG Worker Service
   rag-worker:
     ## image: minchulshin/ragit-rag-worker:latest
-    container_name: ragit-rag-worker
-
     build:
-      context: . 
-      dockerfile: rag_worker/Dockerfile 
+      context: .
+      dockerfile: rag_worker/Dockerfile
+    image: ragit-rag-worker
+    container_name: ragit-rag-worker
 
     deploy:
           resources:
