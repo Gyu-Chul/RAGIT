@@ -393,7 +393,8 @@ RAGIT/
 ├── parsed_repository/           # Parsed code cache (git ignored)
 ├── logs/                        # Application logs (git ignored)
 │
-├── docker-compose.yml           # Multi-container orchestration
+├── docker-compose.yml           # Multi-container orchestration (with GPU)
+├── docker-compose.cpu.yml       # Multi-container orchestration (with CPU, without GPU)
 ├── docker-compose.local.yml     # Local development setup
 ├── pyproject.toml               # Python dependencies (uv)
 ├── uv.lock                      # Locked dependencies
@@ -454,7 +455,8 @@ This video covers:
 
 3. **Start all services**
    ```bash
-   docker-compose up -d
+   docker-compose up -d (using GPU)
+   docker-compose -f docker-compose.cpu.yml up -d (using CPU, without GPU)
    ```
 
 4. **Wait for services to be healthy** (approximately 60-90 seconds)
