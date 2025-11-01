@@ -123,6 +123,17 @@ class APIService:
         data = self._make_request("GET", f"/api/repositories/{repo_id}/status")
         return self._convert_datetime_fields(data)
 
+    def sync_repository(self, repo_id: str) -> Dict[str, Any]:
+        """Sync repository with latest changes from remote"""
+        try:
+            data = self._make_request("POST", f"/api/repositories/{repo_id}/sync")
+            return data
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
     def get_chat_rooms(self, repo_id: str) -> List[Dict[str, Any]]:
         """Get chat rooms for a repository"""
         try:

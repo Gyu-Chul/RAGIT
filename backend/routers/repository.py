@@ -199,6 +199,88 @@ def get_repository_status(
     }
 
 
+@router.post("/{repo_id}/sync")
+def sync_repository(
+    repo_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Repository를 원격 저장소와 동기화하여 최신 변경사항 반영"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # 권한 확인
+    if not RepositoryService.check_user_permission(db, repo_id, str(current_user.id), "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to sync this repository"
+        )
+
+    # Repository 조회
+    repository = RepositoryService.get_repository(db, repo_id)
+    if not repository:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Repository not found"
+        )
+
+    # 이미 동기화 중인지 확인
+    if repository.status in ["syncing", "updating", "pending"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Repository is already being processed (status: {repository.status})"
+        )
+
+    try:
+        logger.info(f"Starting sync for repository: {repository.name} (ID: {repo_id})")
+
+        # Celery Task 비동기 트리거 - Repository 업데이트 파이프라인
+        try:
+            from ..core.celery import celery_app
+
+            logger.info(f"Celery broker: {celery_app.conf.broker_url}")
+            logger.info(f"Triggering update_repository_pipeline task for repository: {repository.id}")
+
+            # Collection name 생성 (repo_id에서 하이픈 제거)
+            collection_name = f"repo_{str(repository.id).replace('-', '_')}"
+
+            # Celery를 통해 update task 전송
+            task = celery_app.send_task(
+                'rag_worker.tasks.update_repository_pipeline',
+                kwargs={
+                    'repo_id': str(repository.id),
+                    'repo_name': repository.name,
+                    'collection_name': collection_name,
+                    'save_json': True,
+                    'model_key': 'text-embedding-3-small'  # 기본 임베딩 모델
+                }
+            )
+            logger.info(f"✅ Celery update task sent. Task ID: {task.id}")
+
+        except Exception as task_error:
+            logger.error(f"❌ Failed to trigger Celery update task: {str(task_error)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to start sync task: {str(task_error)}"
+            )
+
+        return {
+            "success": True,
+            "message": f"Repository sync started for '{repository.name}'",
+            "task_id": task.id,
+            "repo_id": str(repository.id)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to sync repository: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to sync repository: {str(e)}"
+        )
+
+
 @router.put("/{repo_id}", response_model=RepositoryResponse)
 def update_repository(
     repo_id: str,
