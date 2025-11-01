@@ -350,3 +350,155 @@ def delete_message(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Failed to delete message"
         )
+
+
+@router.post("/code-history", status_code=status.HTTP_200_OK)
+def get_code_history(
+    request: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """파일 또는 코드의 Git 히스토리 조회"""
+    from ..core.celery import celery_app
+    import logging
+    import json
+    from pathlib import Path
+
+    logger = logging.getLogger(__name__)
+
+    # 필수 파라미터 검증
+    repo_id = request.get("repo_id")
+    file_path = request.get("file_path")
+    line_info = request.get("line_info", "")  # "150-200" 형식
+    node_name = request.get("node_name")
+    node_type = request.get("node_type")
+
+    # track_full_file: True면 파일 전체 추적, False/None이면 특정 노드 추적
+    track_full_file = request.get("track_full_file", True)
+
+    if not all([repo_id, file_path]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing required parameters: repo_id, file_path"
+        )
+
+    # 전체 파일 추적 모드면 node_name, node_type을 None으로 설정
+    if track_full_file:
+        logger.info(f"📖 Tracking full file history for {file_path}")
+        node_name = None
+        node_type = None
+        start_line = None
+        end_line = None
+    # 특정 노드 추적 모드
+    else:
+        # line_info를 파싱하여 start_line, end_line 추출
+        start_line = None
+        end_line = None
+        if line_info:
+            try:
+                if '-' in line_info:
+                    parts = line_info.split('-')
+                    start_line = int(parts[0])
+                    end_line = int(parts[1]) if len(parts) > 1 else start_line
+                else:
+                    start_line = int(line_info)
+                    end_line = start_line
+            except ValueError:
+                logger.warning(f"⚠️ Invalid line_info format: {line_info}")
+
+        # node_name이 없으면 parsed_repository에서 찾기
+        if not node_name and start_line:
+            try:
+                # parsed_repository에서 해당 파일의 JSON 읽기
+                parsed_dir = Path("parsed_repository") / f"repo_{repo_id.replace('-', '_')}"
+                json_file_path = parsed_dir / file_path.replace('.py', '.json')
+
+                logger.info(f"🔍 Looking for parsed JSON at: {json_file_path}")
+
+                if json_file_path.exists():
+                    with open(json_file_path, 'r', encoding='utf-8') as f:
+                        parsed_data = json.load(f)
+
+                    # start_line과 매칭되는 노드 찾기
+                    for item in parsed_data:
+                        if item.get('start_line') <= start_line <= item.get('end_line', start_line):
+                            item_name = item.get('name', '')
+                            item_type = item.get('type', 'function')
+
+                            # 이름이 있는 노드만 사용 (function, async_function, class)
+                            if item_name and item_type in ['function', 'async_function', 'class']:
+                                node_name = item_name
+                                node_type = item_type
+                                # 실제 노드의 라인 범위로 업데이트
+                                start_line = item.get('start_line')
+                                end_line = item.get('end_line')
+                                logger.info(f"✅ Found node: {node_name} ({node_type}) at lines {start_line}-{end_line}")
+                                break
+                            # 이름이 없는 노드 (module, script)의 경우 라인 범위만 사용
+                            elif item_type in ['module', 'script']:
+                                node_name = ''  # module/script는 이름이 없음
+                                node_type = item_type
+                                start_line = item.get('start_line')
+                                end_line = item.get('end_line')
+                                logger.info(f"✅ Found {node_type} at lines {start_line}-{end_line}")
+                                break
+
+                if not node_name and not node_type:
+                    # 기본값 설정
+                    logger.warning(f"⚠️ Could not find node at line {start_line} in {file_path}")
+                    node_name = ''
+                    node_type = "script"
+
+            except Exception as e:
+                logger.error(f"❌ Error finding node name: {str(e)}")
+                node_name = ''
+                node_type = "script"
+
+        # node_name이 여전히 없으면 기본값
+        if not node_name and not node_type:
+            node_name = ''
+            node_type = 'script'
+
+    # Repository 접근 권한 확인
+    if not RepositoryService.check_user_permission(db, repo_id, str(current_user.id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to access this repository"
+        )
+
+    try:
+        # Celery task 호출 (동기적으로 결과 대기)
+        task = celery_app.send_task(
+            'rag_worker.tasks.get_code_history',
+            kwargs={
+                'repo_id': repo_id,
+                'file_path': file_path,
+                'node_name': node_name,
+                'node_type': node_type,
+                'start_line': start_line,
+                'end_line': end_line
+            }
+        )
+
+        if node_name is None and node_type is None:
+            logger.info(f"📖 Getting full file history for {file_path}")
+        else:
+            logger.info(f"📖 Getting history for {node_type} '{node_name}' in {file_path} (lines {start_line}-{end_line})")
+
+        # 결과 대기 (최대 30초)
+        result = task.get(timeout=30)
+
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=result.get("error", "Failed to get code history")
+            )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"❌ Failed to get code history: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get code history: {str(e)}"
+        )

@@ -148,8 +148,10 @@ async def proxy_to_backend(request: Request, path: str):
     # 요청 본문 읽기
     body = await request.body()
 
-    logging.info(f"Proxying {request.method} request to {url}")
-    logging.info(f"Request body: {body.decode('utf-8') if body else 'empty'}")
+    logging.info(f"🔀 Proxying {request.method} request to {url}")
+    if path == "repositories/code-history":
+        logging.info(f"📖 Code history API request detected")
+    logging.info(f"📝 Request body: {body.decode('utf-8') if body else 'empty'}")
 
     # httpx로 백엔드에 요청 (리다이렉트 비활성화)
     async with httpx.AsyncClient(follow_redirects=False) as client:

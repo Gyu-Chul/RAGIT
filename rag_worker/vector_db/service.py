@@ -3,7 +3,7 @@ Vector DB 통합 서비스
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from .collection_manager import CollectionManager
 from .embedding_service import EmbeddingService
@@ -181,3 +181,20 @@ class VectorDBService:
         )
 
         return self.search_service.search(input_data)
+    
+    def delete_entities(
+        self, collection_name: str, source_files: List[str]
+    ) -> Dict[str, Any]:
+        """
+        주어진 소스 파일 목록에 해당하는 모든 엔티티를 컬렉션에서 삭제합니다.
+
+        Args:
+            collection_name: 컬렉션 이름
+            source_files: 삭제할 엔티티들의 원본 파일명 리스트
+
+        Returns:
+            삭제 결과
+        """
+        return self.collection_manager.delete_entities_by_source_files(
+            collection_name, source_files
+        )

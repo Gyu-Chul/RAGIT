@@ -55,6 +55,16 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     "openai>=1.0.0",
 
+    # Git History Tracking
+    "GitPython>=3.1.0",
+    "tree-sitter>=0.20.0,<0.21.0",
+    "tree-sitter-languages==1.8.0",
+    "diff-match-patch>=20230430",
+
+    # LLM & Utilities
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+
     # SDK dependencies
     "psutil>=5.9.0",
 ]
@@ -77,8 +87,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["backend", "frontend", "gateway", "rag_worker", "ragit_sdk"]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "black>=23.0.0",

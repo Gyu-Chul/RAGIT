@@ -196,19 +196,10 @@ services:
       retries: 3
       start_period: 40s
 
-  # RAG Worker Service (GPU version)
+  # RAG Worker Service (CPU version)
   rag-worker:
-    image: minchulshin/ragit-rag-worker-gpu:latest
+    image: minchulshin/ragit-rag-worker-cpu:latest
     container_name: ragit-rag-worker
-
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1 # 1개의 GPU를 할당 (모두 할당하려면 'all')
-              capabilities: [gpu]
-
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ragit
       REDIS_URL: redis://redis:6379/0

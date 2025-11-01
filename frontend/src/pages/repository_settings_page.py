@@ -184,6 +184,7 @@ class RepositorySettingsPage:
 
             if self.auth_service.is_admin():
                 actions.extend([
+                    ("🔄 Sync Repository", lambda: self.sync_repository()),
                     ("👥 Manage Members", lambda: self.show_members_dialog()),
                     ("🗑️ Delete Repository", lambda: self.show_delete_repository_dialog())
                 ])
@@ -389,8 +390,93 @@ class RepositorySettingsPage:
 
         dialog.open()
 
-    def trigger_sync(self):
-        ui.notify('Synchronization started...', color='blue')
+    def sync_repository(self):
+        """레포지토리 동기화 시작"""
+        if not self.selected_repo:
+            ui.notify('Please select a repository first', color='red')
+            return
+
+        repo_id = self.selected_repo["id"]
+        repo_name = self.selected_repo["name"]
+
+        try:
+            ui.notify(f'🔄 Starting synchronization for "{repo_name}"...', color='blue')
+
+            # API 호출하여 동기화 시작
+            result = self.api_service.sync_repository(repo_id)
+
+            if result.get("success"):
+                ui.notify(f'✅ Synchronization task started for "{repo_name}"', color='positive')
+                # 상태 체크 시작
+                self.start_sync_status_check(repo_id, repo_name)
+            else:
+                error_msg = result.get("error", "Unknown error")
+                ui.notify(f'❌ Failed to start synchronization: {error_msg}', color='negative')
+
+        except Exception as e:
+            ui.notify(f'❌ Failed to sync repository: {str(e)}', color='negative')
+
+    def start_sync_status_check(self, repo_id: str, repo_name: str):
+        """동기화 상태를 주기적으로 확인"""
+        check_count = 0
+        max_checks = 120  # 최대 120번 확인 (약 2분)
+
+        def check_status():
+            nonlocal check_count
+            check_count += 1
+
+            try:
+                status_data = self.api_service.get_repository_status(repo_id)
+                current_status = status_data.get('status')
+                vectordb_status = status_data.get('vectordb_status')
+                error_message = status_data.get('error_message')
+
+                # 에러 상태 확인
+                if current_status == 'error' or vectordb_status == 'error':
+                    if hasattr(self, 'sync_timer'):
+                        self.sync_timer.active = False
+                    if error_message:
+                        ui.notify(f'❌ Sync failed for "{repo_name}": {error_message}', color='negative', timeout=15000)
+                    else:
+                        ui.notify(f'❌ Sync failed for "{repo_name}". Please try again.', color='negative', timeout=10000)
+
+                    # 에러 메시지를 볼 수 있도록 잠시 대기 후 reload
+                    ui.timer(5.0, lambda: ui.navigate.reload(), once=True)
+                    return
+
+                # 완료 상태 확인
+                if current_status == 'active' and vectordb_status == 'active':
+                    if hasattr(self, 'sync_timer'):
+                        self.sync_timer.active = False
+
+                    # 변경사항이 있었는지 확인 (last_sync 시간 체크)
+                    # 빠르게 완료된 경우 (1초 이내) "변경사항 없음"으로 간주
+                    if check_count <= 2:
+                        ui.notify(f'ℹ️ Repository "{repo_name}" is already up to date. No changes detected.',
+                                 color='info', timeout=5000)
+                    else:
+                        ui.notify(f'✅ Repository "{repo_name}" synchronized successfully!',
+                                 color='positive', timeout=5000)
+
+                    # 알림을 볼 수 있도록 잠시 대기 후 reload
+                    ui.timer(3.0, lambda: ui.navigate.reload(), once=True)
+                    return
+
+                # 최대 확인 횟수 초과
+                if check_count >= max_checks:
+                    if hasattr(self, 'sync_timer'):
+                        self.sync_timer.active = False
+                    ui.notify(f'⏱️ Sync is still in progress for "{repo_name}". Please check back later.', color='info', timeout=5000)
+                    return
+
+            except Exception as e:
+                print(f"Sync status check error: {e}")
+                if check_count >= 5:
+                    if hasattr(self, 'sync_timer'):
+                        self.sync_timer.active = False
+
+        # 1초마다 상태 확인
+        self.sync_timer = ui.timer(1.0, check_status)
 
     def show_sync_logs(self):
         ui.notify('Sync logs feature coming soon', color='blue')

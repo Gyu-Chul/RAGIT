@@ -18,17 +18,20 @@ WORKDIR /app
 COPY rag_worker/pyproject.toml ./pyproject.toml
 
 # Create requirements.txt from pyproject.toml and install dependencies
-RUN uv pip compile pyproject.toml -o requirements.txt && \
-    uv venv && \
-    uv pip install -r requirements.txt
+RUN uv pip compile pyproject.toml --extra-index-url https://download.pytorch.org/whl/cu121 -o requirements.txt
 
 # Production stage
-FROM python:3.11-slim
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 # Install runtime dependencies (git for cloning repositories)
 RUN apt-get update && apt-get install -y \
     git \
-    && rm -rf /var/lib/apt/lists/*
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3.11 /usr/bin/python
 
 # Create app user
 RUN useradd --create-home --shell /bin/bash app
@@ -36,8 +39,13 @@ RUN useradd --create-home --shell /bin/bash app
 # Set working directory
 WORKDIR /app
 
-# Copy virtual environment from builder
-COPY --from=builder --chown=app:app /app/.venv /app/.venv
+# Copy requirements.txt
+COPY --from=builder /app/requirements.txt ./requirements.txt
+# Create new Virtual environment and install library
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    python -m venv .venv && \
+    /root/.local/bin/uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121 --python .venv/bin/python && \
+    chown -R app:app /app
 
 # Copy only rag_worker-related files
 COPY --chown=app:app rag_worker/ ./rag_worker/
@@ -57,4 +65,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import celery; from rag_worker.celery_app import app; print('Worker running') if app.control.inspect().active() else exit(1)" || exit 1
 
 # Run RAG worker service with 2 concurrent workers
-CMD ["python", "-m", "celery", "-A", "rag_worker.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+CMD ["/app/.venv/bin/python", "-m", "celery", "-A", "rag_worker.celery_app", "worker", "--loglevel=info", "--concurrency=2"]

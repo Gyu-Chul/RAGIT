@@ -9,6 +9,7 @@ import stat
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+from .history_tracker import FunctionHistoryTracker
 
 from .exceptions import (
     RepositoryNotFoundError,
@@ -290,6 +291,7 @@ class GitService:
 
             # git pull 실행
             logger.info(f"Pulling repository: {repo_name}")
+            self.command_runner.run(["git", "checkout", "main"], cwd=repo_path)
             result = self.command_runner.run(["git", "pull"], cwd=repo_path)
 
             logger.info(f"Repository pulled successfully: {repo_name}")
@@ -343,4 +345,88 @@ class GitService:
         except (RepositoryNotFoundError, Exception) as e:
             logger.error(f"Delete repository error: {str(e)}")
             return DeleteResult(success=False, repo_name=repo_name, message=None, error=str(e))
+    
 
+    def _format_source_file(self, file_paths: List[str]) -> List[str]:
+        """
+        파일 경로 리스트의 확장자만 '.json'으로 변경 (경로 유지)
+        예: ['src/api/utils.py'] -> ['src/api/utils.json']
+        """
+        return [str(Path(p).with_suffix(".json")) for p in file_paths]
+
+    def diff_files(self, repo_name: str) -> Dict[str, Any]:
+        """
+        로컬 저장소의 현재 상태와 'origin/main'을 비교하여 변경된 파일 목록을 포맷에 맞게 반환합니다.
+
+        Args:
+            repo_name: 레포지토리 이름
+
+        Returns:
+            diff 결과 (성공 여부, 포맷팅된 파일 목록, 메시지/에러)
+        """
+        try:
+            # 1. 레포지토리 경로 확인
+            self.repo_manager.validate_exists(repo_name)
+            repo_path = self.repo_manager.get_repo_path(repo_name)
+            logger.info(f"[{repo_name}] Starting diff check against origin/main.")
+
+            # 2. 원격 저장소의 최신 정보를 가져옴 (fetch)
+            logger.info(f"[{repo_name}] Fetching remote repository updates.")
+            self.command_runner.run(["git", "fetch"], cwd=repo_path)
+            
+            # 3. HEAD (현재 로컬)와 'origin/main'을 비교하여 변경된 파일 목록을 가져옴
+            logger.info(f"[{repo_name}] Comparing local HEAD with origin/main.")
+            diff_result = self.command_runner.run(
+                ["git", "diff", "--name-only", "HEAD", "origin/main"],
+                cwd=repo_path
+            )
+
+            # 4. 결과를 파싱하여 리스트로 변환
+            stdout = diff_result["stdout"]
+            raw_changed_files = stdout.strip().split('\n') if stdout.strip() else []
+            
+            # 5. 새로운 포맷팅 메서드를 호출하여 파일명 리스트를 변환
+            formatted_files = self._format_source_file(raw_changed_files)
+            
+            logger.info(f"[{repo_name}] Found and formatted {len(formatted_files)} changed files.")
+
+            return {
+                "success": True,
+                "files": formatted_files, # 포맷팅된 파일 리스트를 반환
+                "message": f"Found {len(formatted_files)} changed files between local and remote."
+            }
+
+        except (RepositoryNotFoundError, GitCommandError, GitTimeoutError) as e:
+            logger.error(f"Diff files error in {repo_name}: {str(e)}")
+            return {
+                "success": False,
+                "files": [],
+                "error": str(e)
+            }
+
+
+
+#################### history tracker 실행 예시
+# if __name__ == "__main__":
+#     REPO_PATH = "./RAGIT"  # 분석할 Git 저장소 경로 (clone된 원본 소스코드)
+#     FILE_PATH_TO_TRACE = "rag_worker/ask_question/ask_question.py" # 실제 파일 경로
+#     # --- 추적 대상 설정 ---
+#     NODE_TO_TRACE = "AskQuestion"  # 추적할 클래스 또는 함수 이름
+#     NODE_TYPE_TO_TRACE = "class"   # 'function' 또는 'class'
+
+#     # 실행
+#     tracker = FunctionHistoryTracker(REPO_PATH)
+#     function_history = tracker.trace_history(FILE_PATH_TO_TRACE, NODE_TO_TRACE, NODE_TYPE_TO_TRACE)
+
+#     # 결과 출력
+#     if not function_history:
+#         print("해당 함수의 변경 이력을 찾지 못했습니다.")
+#     else:
+#         print(f"'{NODE_TO_TRACE}' 함수의 변경 이력 (총 {len(function_history)}회 변경)")
+#         print("="*60)
+#         for change in function_history:
+#             print(f"Commit: {change.commit_hash} by {change.author} on {change.date}")
+#             print(f"Message: {change.commit_message}\n")
+#             print("--- Diff ---")
+#             print(change.highlighted_diff)
+#             print("="*60)
