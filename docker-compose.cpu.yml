@@ -196,9 +196,9 @@ services:
       retries: 3
       start_period: 40s
 
-  # RAG Worker Service
+  # RAG Worker Service (CPU version)
   rag-worker:
-    image: minchulshin/ragit-rag-worker:latest
+    image: minchulshin/ragit-rag-worker-cpu:latest
     container_name: ragit-rag-worker
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ragit
