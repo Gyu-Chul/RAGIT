@@ -1,3 +1,14 @@
+<table>
+  <tr>
+    <td><img src="img.png" width="120" alt="2025 오픈소스 개발자대회 수상 배지"></td>
+    <td>
+      <b>🏆 2025 Open Source Developer Competition Award</b><br/><br/>
+      <b>KOR</b>: 본 프로젝트는 과학기술정보통신부 주최, 정보통신산업진흥원 주관 「2025년 오픈소스 개발자대회」에서 기술적 우수성과 혁신성을 인정받아 수상팀에게 수여되는 공식 배지입니다.<br/><br/>
+      <b>ENG</b>: This project has been recognized for its technical excellence and innovation at the <i>2025 Open Source Developer Competition</i>, hosted by the Ministry of Science and ICT (MSIT) and organized by the National IT Industry Promotion Agency (NIPA). This is the official badge awarded to winning teams.
+    </td>
+  </tr>
+</table>
+
 # RAGIT - Retrieval-Augmented Generation with Intelligent Tracking
 
 **RAGIT** is a self-hosted, production-ready RAG (Retrieval-Augmented Generation) system built with microservices architecture. It enables AI-powered code analysis, semantic search, and intelligent chat interactions with your codebase using vector embeddings and LLM integration.
